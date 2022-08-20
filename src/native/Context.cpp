@@ -23,15 +23,16 @@ std::shared_ptr<Context> Context::make(const Parameters& params){
 
 Context::Context() :
     SharedObject(),
-    _gl_thread(std::make_shared<BS::thread_pool>(1)),
+    _gl_thread(new BS::thread_pool(1)),
     _last_start(std::chrono::steady_clock::now()),
-    onRun(_gl_thread),
-    onDetsroy(_gl_thread){
+    onRun(Event<Context*, const std::chrono::milliseconds&>::make(_gl_thread))
+    // onDetsroy(_gl_thread)
+    {
 }
 
 Context::~Context(){
     auto future = _gl_thread->submit([this](){
-        onDetsroy.emit(this);
+        // onDetsroy.emit(this);
     });
 
     _gl_thread->unpause();
@@ -40,17 +41,17 @@ Context::~Context(){
 }
 
 bool Context::start(){
-    onRun.push<nullptr>([this](){
+    onRun->push([this](){
         glfwPollEvents();
         glfwSwapBuffers(_window.get());
         _gl_thread->pause();
     });
 
     auto now = std::chrono::steady_clock::now();
-    auto dt = std::chrono::duration_cast<std::chrono::microseconds>(now - _last_start);
+    auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(now - _last_start);
     _last_start = now;
 
-    onRun.emit(this, dt);
+    onRun->emit(this, dt);
     _gl_thread->unpause();
     return true;
 }
@@ -97,12 +98,12 @@ void Context::_initGl(const Parameters& params){
     
     glfwSetWindowPosCallback(_window.get(), [](GLFWwindow* window, int x, int y){
         auto ctx = static_cast<Context*>(glfwGetWindowUserPointer(window));
-        ctx->onWindowMove.emit(ctx, x, y);
+        // ctx->onWindowMove.emit(ctx, x, y);
     });
 
     glfwSetKeyCallback(_window.get(), [](GLFWwindow* window, int key, int scancode, int action, int mods){
         auto ctx = static_cast<Context*>(glfwGetWindowUserPointer(window));
-        ctx->onKey.emit(ctx, glfwToKey(key), scancode, glfwToKeyAction(action), mods);
+        // ctx->onKey.emit(ctx, glfwToKey(key), scancode, glfwToKeyAction(action), mods);
     });
 
     // _bindGlfwCallback<&glfw::Window::setMoveCallback>(onWinMove);

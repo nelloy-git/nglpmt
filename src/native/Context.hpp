@@ -34,11 +34,11 @@ public:
     const std::thread::id& getThreadId() const;
 
     // gl thread
-    Event<Context*, const std::chrono::microseconds&> onRun;
-    Event<Context*> onDetsroy;
+    const std::shared_ptr<Event<Context*, const std::chrono::milliseconds&>> onRun;
+    // Event<Context*> onDetsroy;
 
     // Non-gl thread
-    Event<Context*, int, int> onWindowMove;
+    // Event<Context*, int, int> onWindowMove;
     // Event<Context*, int, int> onWinResize;
     // Event<Context*> onWinClose;
     // Event<Context*> onWinRefresh;
@@ -53,7 +53,7 @@ public:
     // Event<Context*, Button, Action, ModFlags> onCursorButton;
     // Event<Context*, double, double> onCursorScroll;
 
-    Event<Context*, const Key&, const int&, const KeyAction&, const KeyMods&> onKey;
+    // Event<Context*, const Key&, const int&, const KeyAction&, const KeyMods&> onKey;
     // Event<Context*, unsigned int, ModFlags> onChar;
 protected:
     Context();

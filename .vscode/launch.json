@@ -1,0 +1,12 @@
+{
+    "configurations": [{
+       "type": "lldb",
+       "request": "launch",
+       "name": "Launch Program",
+       "preLaunchTask": "npm: build:dev",
+       "program": "C:\\Program Files\\nodejs\\node.exe",
+       "args": [
+          "${workspaceFolder}/index.js"
+       ]
+    }]
+  }

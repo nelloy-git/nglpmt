@@ -8,81 +8,158 @@
 
 #include "BS_thread_pool.hpp"
 #include "native/utils/FuncWrapper.hpp"
+#include "native/utils/SharedObject.hpp"
 #include "native/utils/SrcLoc.hpp"
 
 namespace nglpmt::native {
 
-template<typename ... Args>
-class Event final {
-    using Condition = std::function<bool(Args...)>;
-    using Action = std::function<void(Args...)>;
-    using ActionData = std::tuple<std::shared_ptr<Condition>, std::shared_ptr<Action>, std::shared_ptr<SrcLoc>>;
+enum class EventConditionResult {
+    Continue,   // run action and add to next emit queue
+    Once,       // run action once and forgive
+    Next,       // do not run action but add to next emit queue
+    Free,       // do not run action and forgive
+    Retry,      // do not run action and move to the end of the current emit queue
+};
 
+template<typename ... Args>
+class EventData {
 public:
-    Event(const std::shared_ptr<BS::thread_pool> th_pool = _getDefaultPool()){
-        _pool = th_pool;
-        _list = std::make_shared<std::deque<ActionData>>();
+    using Condition = std::function<EventConditionResult(Args...)>;
+    using Action = std::function<void(Args...)>;
+
+    EventData(const Action& action,
+              const std::optional<Condition>& condition = std::nullopt,
+              const SrcLoc& src_loc = SrcLoc{}) :
+        action(action),
+        condition(condition),
+        src_loc(src_loc){
+    }
+    virtual ~EventData(){};
+
+    inline EventConditionResult checkCondition(const Args&... args){
+        if (!condition.has_value()){
+            return EventConditionResult::Once;
+        }
+
+        try {
+            return condition(args...);
+        } catch (const std::exception& e){
+            std::cout << e.what() << std::endl << data.src_loc.to_string() << std::endl;
+            return EventConditionResult::Free;
+        }
+    }
+
+    inline void runAction(const Args&... args){
+        try {
+            action(args...);
+        } catch (const std::exception& e){
+            std::cout << e.what() << std::endl << data.src_loc.to_string() << std::endl;
+        }
+    }
+
+    Action action;
+    std::optional<Condition> condition;
+    SrcLoc src_loc;
+};
+
+template<typename ... Args>
+class Event : public SharedObject<Event<Args...>> {
+public:
+    static std::shared_ptr<Event> make(const std::shared_ptr<BS::thread_pool> action_thread_pool = _getDefaultPool()
+                                       const std::shared_ptr<BS::thread_pool> condition_thread_pool = _getDefaultPool()){
+        return std::shared_ptr<Event>(new Event(th_pool));
     }
     Event(const Event&) = delete;
     Event(const Event&&) = delete;
-    ~Event(){}
+    virtual ~Event(){}
+
+    void push(const EventData<Args...>& event_data){
+        std::lock_guard lg(_lock);
+        _list->push_back(event_data);
+    }
 
     // Both action and condition are constexpr
     template<auto F, auto C = nullptr>
-    void push(const SrcLoc& loc = SrcLoc{}){
-        static constexpr auto expanded_condition = _expandCondition<C>();
+    void push(const SrcLoc& src_loc = SrcLoc{}){
         static constexpr auto expanded_action = expand_func<F, Args...>();
         
-        std::shared_ptr<Condition> condition;
-        if constexpr (C != nullptr){
-            condition = std::make_shared<Condition>(expanded_condition);
+        std::lock_guard lg(_lock);
+        if constexpr (C == nullptr){
+            _list->emplace_back(expanded_action, std::nullopt, src_loc);
+        } else {
+            static constexpr auto expanded_condition = expand_func<C, Args...>();
+            _list->emplace_back(expanded_action, expanded_condition, src_loc);
         }
-        auto action = std::make_shared<Action>(expanded_action);
-        auto src_loc = std::make_shared<SrcLoc>(loc);
-
-        _push(condition, action, src_loc);
     }
 
     // Condition is constexpr, emit once by default
     template<auto C = nullptr, class F>
-    void push(const F& event_action, const SrcLoc& loc = SrcLoc{}){
-        static constexpr auto expanded_condition = _expandCondition<C>();
+    void push(const F& event_action, const SrcLoc& src_loc = SrcLoc{}){
         auto expanded_action = expand_func<Args...>(event_action);
         
-        std::shared_ptr<Condition> condition;
-        if constexpr (C != nullptr){
-            condition = std::make_shared<Condition>(expanded_condition);
+        std::lock_guard lg(_lock);
+        if constexpr (C == nullptr){
+            _list->emplace_back(expanded_action, std::nullopt, src_loc);
+        } else {
+            static constexpr auto expanded_condition = expand_func<C, Args...>();
+            _list->emplace_back(expanded_action, expanded_condition, src_loc);
         }
-        auto action = std::make_shared<Action>(expanded_action);
-        auto src_loc = std::make_shared<SrcLoc>(loc);
-
-        _push(condition, action, src_loc);
     }
 
     // Everything is runtime
     template<class F, class C>
-    void push(const F& event_action, const C& alive_condition, const SrcLoc& loc = SrcLoc{}){
-        auto expanded_condition = expand_func<Args...>(alive_condition);
+    void push(const F& event_action, const C& alive_condition, const SrcLoc& src_loc = SrcLoc{}){
         auto expanded_action = expand_func<Args...>(event_action);
+        auto expanded_condition = expand_func<Args...>(alive_condition);
 
-        auto condition = std::make_shared<Condition>(expanded_condition);
-        auto action = std::make_shared<Action>(expanded_action);
-        auto src_loc = std::make_shared<SrcLoc>(loc);
-
-        _push(condition, action, src_loc);
+        std::lock_guard lg(_lock);
+        _list->emplace_back(expanded_action, expanded_condition, src_loc);
     }
 
-    std::future<void> emit(const Args&... args){
-        auto divided = _divideList(args...);
-        return _pool->submit([divided](const Args&... args){
-            for (auto& data : *divided.to_do){
-                try {
-                    (*std::get<1>(data))(args...);
-                } catch (const std::exception& e){
-                    // TODO messaging
-                    std::cout << e.what() << std::endl;
+    void emit(const Args&... args){
+        std::lock_guard lg(_lock);
+
+        auto self = this->shared_from_this();
+        _condition_thread_pool->submit([self](const Args&... args){
+            std::lock_guard lg(self->_lock);
+
+            auto new_list = std::make_shared<std::deque<EventData<Args...>>>();
+            auto action_list = std::make_shared<std::deque<EventData<Args...>>>();
+
+            while (!self->_data_list->empty()){
+                auto data = self->_data_list->front();
+                self->_data_list->pop_front();
+                auto res = data.checkCondition(args...);
+                switch (res){
+                case EventConditionResult::Free:
+                    break;
+                    
+                case EventConditionResult::Next:
+                    new_list->push_back(data);
+                    break;
+
+                case EventConditionResult::Once:
+                    action_list->push_back(data);
+                    break;
+
+                case EventConditionResult::Continue:
+                    new_list->push_back(data);
+                    action_list->push_back(data);
+                    break;
+
+                case EventConditionResult::Retry:
+                    _list->push_back(data);
+                default:
+                    break;
                 }
             }
+            self->_data_list = new_list;
+
+            self->_action_thread_pool->submit([action_list](const Args&... args){
+                for (auto& data : *action_list){
+                    data.runAction(args...);
+                }
+            }, args...);
         }, args...);
     }
 
@@ -91,53 +168,21 @@ public:
         return _list->size();
     }
 
+protected:
+    Event(const std::shared_ptr<BS::thread_pool> action_thread_pool,
+          const std::shared_ptr<BS::thread_pool> condition_thread_pool) :
+        _data_list(new std::deque<EventData<Args...>>),
+        _action_thread_pool(action_thread_pool),
+        _condition_thread_pool(condition_thread_pool){
+    }
+
 private:
-    std::shared_ptr<BS::thread_pool> _pool;
-
     std::mutex _lock;
-    std::shared_ptr<std::deque<ActionData>> _list;
+    std::shared_ptr<std::deque<EventData<Args...>>> _data_list;
+    std::shared_ptr<BS::thread_pool> _action_thread_pool;
+    std::shared_ptr<BS::thread_pool> _condition_thread_pool;
 
-    void _push(const std::shared_ptr<std::function<bool(Args...)>>& condition,
-               const std::shared_ptr<std::function<void(Args...)>>& action,
-               const std::shared_ptr<SrcLoc>& loc){
-        std::lock_guard lg(_lock);
-        _list->push_back(std::make_tuple(condition, action, loc));
-    }
-
-    struct DividedList {
-        std::shared_ptr<std::deque<ActionData>> to_do;
-        std::shared_ptr<std::deque<ActionData>> to_clear;
-    };
-
-    DividedList _divideList(const Args&... args){
-        DividedList divided;
-        divided.to_do = std::make_shared<std::deque<ActionData>>();
-        divided.to_clear = std::make_shared<std::deque<ActionData>>();
-
-        std::lock_guard lg(_lock);
-        auto iter = _list->begin();
-        while(iter != _list->end()){
-            auto &data = *iter;
-            auto cond = std::get<0>(data);
-            // No condition => execute once
-            if (!cond){
-                divided.to_do->push_back(*iter);
-                iter = _list->erase(iter);
-                continue;
-            } else {
-                bool alive = (*cond)(args...);
-                if (alive){
-                    divided.to_do->push_back(*iter);
-                    ++iter;
-                } else {
-                    divided.to_clear->push_back(*iter);
-                    iter = _list->erase(iter);
-                }
-            }
-        }
-
-        return divided;
-    }
+    // Static
 
     static std::mutex _default_pool_lock;
     static std::weak_ptr<BS::thread_pool> _default_pool;
@@ -151,15 +196,6 @@ private:
         ptr = std::make_shared<BS::thread_pool>();
         _default_pool = ptr;
         return ptr;
-    }
-
-    template<auto C>
-    static constexpr auto _expandCondition(){
-        if constexpr (C != nullptr){
-            return expand_func<C, Args...>();
-        } else {
-            return nullptr;
-        }
     }
 };
 
