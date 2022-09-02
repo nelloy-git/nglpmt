@@ -1,8 +1,8 @@
 {
     "targets": [{
         "target_name": "testaddon",
-        "cflags!": [ "-fno-exceptions" ],
-        "cflags_cc!": [ "-fno-exceptions" ],
+        "cflags!": [ ],
+        "cflags_cc!": [ ],
         "sources": [
             "<!@(node -p \"var fs=require('fs'),path=require('path'),walk=function(r){let t,e=[],n=null;try{t=fs.readdirSync(r)}catch(r){n=r.toString()}if(n)return n;var a=0;return function n(){var i=t[a++];if(!i)return e;let u=path.resolve(r,i);i=r+'/'+i;let c=fs.statSync(u);if(c&&c.isDirectory()){let r=walk(i);return e=e.concat(r),n()}return e.push(i),n()}()};walk('./src').join(' ');\")",
             "3rd_party/glad/src/gl.c"
@@ -22,7 +22,7 @@
         'dependencies': [
             "<!(node -p \"require('node-addon-api').gyp\")"
         ],
-        'defines': [ 'NAPI_DISABLE_CPP_EXCEPTIONS', 'NGLPMT_DEBUG' ],
+        'defines': [ 'NAPI_CPP_EXCEPTIONS', 'NGLPMT_DEBUG' ],
         'msvs_settings': {
             'VCCLCompilerTool': { "ExceptionHandling": 1, 'AdditionalOptions': [ '-std:c++20', '-W3'] }
       }

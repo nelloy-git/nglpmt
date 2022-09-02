@@ -42,9 +42,9 @@ public:
         }
 
         try {
-            return condition(args...);
+            return condition.value()(args...);
         } catch (const std::exception& e){
-            std::cout << e.what() << std::endl << data.src_loc.to_string() << std::endl;
+            std::cout << e.what() << std::endl << src_loc.to_string() << std::endl;
             return EventConditionResult::Free;
         }
     }
@@ -53,7 +53,7 @@ public:
         try {
             action(args...);
         } catch (const std::exception& e){
-            std::cout << e.what() << std::endl << data.src_loc.to_string() << std::endl;
+            std::cout << e.what() << std::endl << src_loc.to_string() << std::endl;
         }
     }
 
@@ -65,18 +65,13 @@ public:
 template<typename ... Args>
 class Event : public SharedObject<Event<Args...>> {
 public:
-    static std::shared_ptr<Event> make(const std::shared_ptr<BS::thread_pool> action_thread_pool = _getDefaultPool()
+    static std::shared_ptr<Event> make(const std::shared_ptr<BS::thread_pool> action_thread_pool = _getDefaultPool(),
                                        const std::shared_ptr<BS::thread_pool> condition_thread_pool = _getDefaultPool()){
-        return std::shared_ptr<Event>(new Event(th_pool));
+        return std::shared_ptr<Event>(new Event(action_thread_pool, condition_thread_pool));
     }
     Event(const Event&) = delete;
     Event(const Event&&) = delete;
     virtual ~Event(){}
-
-    void push(const EventData<Args...>& event_data){
-        std::lock_guard lg(_lock);
-        _list->push_back(event_data);
-    }
 
     // Both action and condition are constexpr
     template<auto F, auto C = nullptr>
@@ -85,10 +80,10 @@ public:
         
         std::lock_guard lg(_lock);
         if constexpr (C == nullptr){
-            _list->emplace_back(expanded_action, std::nullopt, src_loc);
+            _data_list->emplace_back(expanded_action, std::nullopt, src_loc);
         } else {
             static constexpr auto expanded_condition = expand_func<C, Args...>();
-            _list->emplace_back(expanded_action, expanded_condition, src_loc);
+            _data_list->emplace_back(expanded_action, expanded_condition, src_loc);
         }
     }
 
@@ -99,10 +94,10 @@ public:
         
         std::lock_guard lg(_lock);
         if constexpr (C == nullptr){
-            _list->emplace_back(expanded_action, std::nullopt, src_loc);
+            _data_list->emplace_back(expanded_action, std::nullopt, src_loc);
         } else {
             static constexpr auto expanded_condition = expand_func<C, Args...>();
-            _list->emplace_back(expanded_action, expanded_condition, src_loc);
+            _data_list->emplace_back(expanded_action, expanded_condition, src_loc);
         }
     }
 
@@ -113,14 +108,14 @@ public:
         auto expanded_condition = expand_func<Args...>(alive_condition);
 
         std::lock_guard lg(_lock);
-        _list->emplace_back(expanded_action, expanded_condition, src_loc);
+        _data_list->emplace_back(expanded_action, expanded_condition, src_loc);
     }
 
     void emit(const Args&... args){
         std::lock_guard lg(_lock);
 
         auto self = this->shared_from_this();
-        _condition_thread_pool->submit([self](const Args&... args){
+        auto promise = _condition_thread_pool->submit([self](const Args&... args){
             std::lock_guard lg(self->_lock);
 
             auto new_list = std::make_shared<std::deque<EventData<Args...>>>();
@@ -148,14 +143,14 @@ public:
                     break;
 
                 case EventConditionResult::Retry:
-                    _list->push_back(data);
+                    self->_data_list->push_back(data);
                 default:
                     break;
                 }
             }
             self->_data_list = new_list;
 
-            self->_action_thread_pool->submit([action_list](const Args&... args){
+            auto promise = self->_action_thread_pool->submit([action_list](const Args&... args){
                 for (auto& data : *action_list){
                     data.runAction(args...);
                 }
@@ -165,7 +160,7 @@ public:
 
     size_t size(){
         std::lock_guard lg(_lock);
-        return _list->size();
+        return _data_list->size();
     }
 
 protected:
@@ -184,25 +179,28 @@ private:
 
     // Static
 
-    static std::mutex _default_pool_lock;
-    static std::weak_ptr<BS::thread_pool> _default_pool;
+    static std::mutex& _getDefaultPoolLock(){
+        static std::mutex lock;
+        return lock;
+    }
 
-    static std::shared_ptr<BS::thread_pool> _getDefaultPool(){
-        std::lock_guard lg(_default_pool_lock);
-
-        auto ptr = _default_pool.lock();
-        if (ptr){return ptr;}
-
-        ptr = std::make_shared<BS::thread_pool>();
-        _default_pool = ptr;
+    static std::weak_ptr<BS::thread_pool>& _getDefaultPoolPtr(){
+        static std::weak_ptr<BS::thread_pool> ptr;
         return ptr;
     }
+
+    static std::shared_ptr<BS::thread_pool> _getDefaultPool(){
+        std::lock_guard lg(_getDefaultPoolLock());
+
+        auto& wptr = _getDefaultPoolPtr();
+
+        auto sptr = wptr.lock();
+        if (sptr){return sptr;}
+
+        sptr = std::make_shared<BS::thread_pool>();
+        wptr = sptr;
+        return std::move(sptr);
+    }
 };
-
-template<typename ... Args>
-std::mutex Event<Args...>::_default_pool_lock;
-
-template<typename ... Args>
-std::weak_ptr<BS::thread_pool> Event<Args...>::_default_pool;
 
 }

@@ -7,7 +7,7 @@
 			"group": "build",
 			"problemMatcher": [],
 			"label": "npm: build:dev",
-			"detail": "node-gyp -j 16 build --debug"
+			"detail": "node-gyp -j 16 build --debug -DNAPI_CPP_EXCEPTIONS"
 		}
 	]
 }
