@@ -144,7 +144,7 @@ Napi::Value Context::onRun(const Napi::CallbackInfo& info){
             data->result = false;
             auto future = data->barrier.get_future();
 
-            auto block_result = condition.BlockingCall(data, &_jsOnRunConditionCallback);
+            condition.BlockingCall(data, &_jsOnRunConditionCallback);
             future.wait();
 
             std::cout << "Done " << data << std::endl;

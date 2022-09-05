@@ -51,7 +51,7 @@ struct tuple_type_index<T, std::tuple<U, Types...>> {
 };
 
 template <class T, class... Types>
-using tuple_type_index_v = tuple_type_index<T, Types...>::value;
+using tuple_type_index_v = typename tuple_type_index<T, Types...>::value;
 
 template <class T1, class T2, size_t ... Seq>
 constexpr bool is_same_tuples(std::index_sequence<Seq...>){

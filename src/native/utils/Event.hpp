@@ -8,6 +8,7 @@
 
 #include "BS_thread_pool.hpp"
 #include "native/utils/FuncWrapper.hpp"
+#include "native/utils/GlobalThreadPool.hpp"
 #include "native/utils/SharedObject.hpp"
 #include "native/utils/SrcLoc.hpp"
 
@@ -65,8 +66,8 @@ public:
 template<typename ... Args>
 class Event : public SharedObject<Event<Args...>> {
 public:
-    static std::shared_ptr<Event> make(const std::shared_ptr<BS::thread_pool> action_thread_pool = _getDefaultPool(),
-                                       const std::shared_ptr<BS::thread_pool> condition_thread_pool = _getDefaultPool()){
+    static std::shared_ptr<Event> make(const std::shared_ptr<BS::thread_pool> action_thread_pool = GlobalThreadPool::get(),
+                                       const std::shared_ptr<BS::thread_pool> condition_thread_pool = GlobalThreadPool::get()){
         return std::shared_ptr<Event>(new Event(action_thread_pool, condition_thread_pool));
     }
     Event(const Event&) = delete;
@@ -176,31 +177,6 @@ private:
     std::shared_ptr<std::deque<EventData<Args...>>> _data_list;
     std::shared_ptr<BS::thread_pool> _action_thread_pool;
     std::shared_ptr<BS::thread_pool> _condition_thread_pool;
-
-    // Static
-
-    static std::mutex& _getDefaultPoolLock(){
-        static std::mutex lock;
-        return lock;
-    }
-
-    static std::weak_ptr<BS::thread_pool>& _getDefaultPoolPtr(){
-        static std::weak_ptr<BS::thread_pool> ptr;
-        return ptr;
-    }
-
-    static std::shared_ptr<BS::thread_pool> _getDefaultPool(){
-        std::lock_guard lg(_getDefaultPoolLock());
-
-        auto& wptr = _getDefaultPoolPtr();
-
-        auto sptr = wptr.lock();
-        if (sptr){return sptr;}
-
-        sptr = std::make_shared<BS::thread_pool>();
-        wptr = sptr;
-        return std::move(sptr);
-    }
 };
 
 }
