@@ -29,12 +29,12 @@ public:
     static std::shared_ptr<Context> make(const Parameters& params);
     virtual ~Context();
 
-    bool start();
-    void wait();
+    std::future<void> run();
     const std::thread::id& getThreadId() const;
 
-    // gl thread
-    const std::shared_ptr<Event<Context*, const std::chrono::milliseconds&>> onRun;
+    // const std::shared_ptr<Event<std::weak_ptr<Context>, const std::chrono::milliseconds&>> onStart;
+    const std::shared_ptr<Event<std::weak_ptr<Context>, const std::chrono::milliseconds&>> onRun;     // gl thread
+    // const std::shared_ptr<Event<std::weak_ptr<Context>, const std::chrono::milliseconds&>> onFinish;
     // Event<Context*> onDetsroy;
 
     // Non-gl thread
@@ -67,7 +67,9 @@ private:
     std::thread::id _gl_thread_id;
     // uptr<glfw::Window> _glfw_window;
     // std::atomic<bool> _valid;
-    std::chrono::steady_clock::time_point _last_start;
+    std::chrono::steady_clock::time_point _init_time;
+    std::chrono::steady_clock::time_point _last_start_time;
+    std::chrono::steady_clock::time_point _last_finish_time;
 
     void _initGl(const Parameters& params);
 

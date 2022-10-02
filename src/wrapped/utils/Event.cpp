@@ -5,6 +5,7 @@
 #include "native/utils/GlobalThreadPool.hpp"
 
 using namespace nglpmt;
+using namespace nglpmt::js;
 
 struct Event::Parameter {
     Parameter(const Napi::Value& value) :
@@ -80,53 +81,109 @@ private:
     > _value;
 };
 
-void Event::Init(Napi::Env env, Napi::Object exports){
-    auto constructor_func = DefineClass(env, "Event", {
-        InstanceMethod<&Event::emit>("emit", static_cast<napi_property_attributes>(napi_writable | napi_configurable)),
-        InstanceMethod<&Event::push>("push", static_cast<napi_property_attributes>(napi_writable | napi_configurable)),
+Napi::Function Event::createJsConstructor(Napi::Env env){
+    return DefineClass(env, "Event", {
+        InstanceMethod<&Event::addActionQueued>("addActionQueued", static_cast<napi_property_attributes>(napi_default_method)),
+        InstanceMethod<&Event::addActionNow>("addActionNow", static_cast<napi_property_attributes>(napi_default_method)),
+        InstanceMethod<&Event::delAction>("delAction", static_cast<napi_property_attributes>(napi_default_method)),
+        InstanceMethod<&Event::emitQueued>("emitQueued", static_cast<napi_property_attributes>(napi_default_method)),
+        InstanceMethod<&Event::emitNow>("emitNow", static_cast<napi_property_attributes>(napi_default_method)),
     });
-
-    exports.Set("Event", constructor_func);
 };
 
 Event::Event(const Napi::CallbackInfo& info) :
-    Napi::ObjectWrap<Event>(info){
-    std::u16string name = info[0].As<Napi::String>();
-    _native = _getMap().getOrMake(name, &NativeEvent::make, native::GlobalThreadPool::get(), native::GlobalThreadPool::get());
+    Napi::ObjectWrap<Event>(info),
+    _destroying(new std::atomic<bool>(false)),
+    _native(_getMap().getOrMake(info[0].As<Napi::String>(), &Event::NativeEvent::make,
+                                native::GlobalThreadPool::get(), native::GlobalThreadPool::get())),
+    _id2tsfn(new std::unordered_map<ID, Tsfn>){
 }
 
 Event::~Event(){
+    *_destroying = true;
+    for (auto& data : *_id2tsfn){
+        static_cast<void>(_native->delActionNow(data.first));
+    }
 }
 
-Napi::Value Event::push(const Napi::CallbackInfo& info){
-    auto tsfn = Napi::ThreadSafeFunction::New(
-        info.Env(), info[0].As<Napi::Function>(), "nglpmt::Context.onRun callback", 0, 1
-    );
+Napi::Value Event::addActionQueued(const Napi::CallbackInfo& info){
+    Napi::Env env = info.Env();
+    std::string s_type = info[0].As<Napi::String>();
+    Napi::Function func = info[1].As<Napi::Function>();
 
-    _push_once(tsfn);
-    return info.Env().Null();
-}
-
-Napi::Value Event::emit(const Napi::CallbackInfo& info){
-    auto params = std::make_shared<std::vector<Parameter>>();
-    for (int i = 0; i < info.Length(); ++i){
-        auto& param = params->emplace_back(info[i]);
-        if (param.getError()){
-            Napi::Error::New(info.Env(), param.getError().value()).ThrowAsJavaScriptException();
+    ActionType type = _getActionType(env, s_type);
+    auto tsfn = Tsfn::New(env, func, __FUNCTION__, 0, 1);
+    auto id = _native->addActionQueued(
+        [type, tsfn, destroying = _destroying](const std::shared_ptr<std::vector<Parameter>> params){
+            if (*destroying){return false;}
+            return _nativeTsfnCallback(type, tsfn, params);
         }
+    );
+    _id2tsfn->insert_or_assign(id, tsfn);
+
+    return Napi::BigInt::New(env, id);
+}
+
+Napi::Value Event::addActionNow(const Napi::CallbackInfo& info){
+    Napi::Env env = info.Env();
+    std::string s_type = info[0].As<Napi::String>();
+    Napi::Function func = info[1].As<Napi::Function>();
+
+    ActionType type = _getActionType(env, s_type);
+    auto tsfn = Tsfn::New(env, func, __FUNCTION__, 0, 1);
+    auto id = _native->addActionNow(
+        [type, tsfn, destroying = _destroying](const std::shared_ptr<std::vector<Parameter>> params){
+            if (*destroying){return false;}
+            return _nativeTsfnCallback(type, tsfn, params);
+        }
+    );
+    _id2tsfn->insert_or_assign(id, tsfn);
+
+    return Napi::BigInt::New(env, id);
+}
+
+Napi::Value Event::delAction(const Napi::CallbackInfo& info){
+    Napi::Env env = info.Env();
+    bool lossless;
+    ID id = info[0].As<Napi::BigInt>().Uint64Value(&lossless);
+
+    if (!lossless){
+        Napi::Error::New(env, "is not BigInt").ThrowAsJavaScriptException();
+        return Napi::Boolean::New(env, false);
     }
 
-    auto deffered = Napi::Promise::Deferred::New(info.Env());
-    auto release_callback = Napi::Function::New(info.Env(), [deffered](const Napi::CallbackInfo& info){deffered.Resolve(info.Env().Null());});
-    auto tsfn = Napi::ThreadSafeFunction::New(info.Env(), release_callback, "nglpmt::Context.wait callback", 0, 1);
+    auto iter = _id2tsfn->find(id);
+    if (iter != _id2tsfn->end()){
+        auto future = _native->delActionNow(id);
+        try {
+            future.get();
+        } catch (const std::exception& e){
+            std::cout << e.what() << std::endl;
+        }
+        
 
-    native::GlobalThreadPool::get()->submit([native = _native, params, tsfn](){
-        native->emit(params);
-        tsfn.NonBlockingCall();
-        tsfn.Release();
-    });
-    
-    return deffered.Promise();
+        iter->second.Release();
+        _id2tsfn->erase(iter);
+        // std::cout << _id2tsfn->size() << std::endl;
+        return Napi::Boolean::New(env, true);
+    }
+    return Napi::Boolean::New(env, false);
+}
+
+Napi::Value Event::emitQueued(const Napi::CallbackInfo& info){
+    Napi::Env env = info.Env();
+    auto params = _convertArgs(info);
+    auto promise = _addJsPromise(env);
+    _native->emitQueued(params);
+    return promise;
+}
+
+Napi::Value Event::emitNow(const Napi::CallbackInfo& info){
+    Napi::Env env = info.Env();
+    auto params = _convertArgs(info);
+    auto promise = _addJsPromise(env);
+    _native->emitNow(params);
+    return promise;
 }
 
 MapMT<std::u16string, Event::NativeEvent>& Event::_getMap(){
@@ -134,21 +191,82 @@ MapMT<std::u16string, Event::NativeEvent>& Event::_getMap(){
     return map;
 }
 
-void Event::_jsCallback(Napi::Env env,
-                        Napi::Function jsCallback,
-                        std::shared_ptr<std::vector<Parameter>>* ptr){
+Event::ActionType Event::_getActionType(Napi::Env env, const std::string& s_type){
+    if (s_type == "once"){
+        return ActionType::once;
+    } else if (s_type == "repeat"){
+        return ActionType::repeat;
+    } else if (s_type == "cond"){
+        return ActionType::cond;
+    } else {
+        throw Napi::Error::New(env, "Wrong push type. Got \"" + s_type + "\". Available: [\"once\", \"repeat\", \"cond\"]");
+    }
+}
+
+void Event::_jsTsfnCallback(Napi::Env env,
+                            Napi::Function jsCallback,
+                            std::nullptr_t* context,
+                            TsfnData* data){
     std::vector<Napi::Value> js_args;
-    for (auto& param : *ptr->get()){
+    for (auto& param : *data->params){
         js_args.push_back(param.getValue(env));
     }
-    jsCallback.Call(js_args);
-    delete ptr;
-};
+    Napi::Value result = jsCallback.Call(js_args);
+    data->promise.set_value(result.IsBoolean() ? result.As<Napi::Boolean>() : false);
+    delete data;
+}
 
-void Event::_push_once(const Napi::ThreadSafeFunction& tsfn){
-    _native->push([tsfn](const std::shared_ptr<std::vector<Parameter>> params){
-        auto copy = new std::shared_ptr<std::vector<Parameter>>(params);
-        tsfn.NonBlockingCall(copy, &_jsCallback);
+bool Event::_nativeTsfnCallback(ActionType type,
+                                Tsfn tsfn,
+                                const std::shared_ptr<std::vector<Parameter>> params){
+    auto data = new TsfnData{params};
+    auto future = data->promise.get_future();
+    auto status = tsfn.NonBlockingCall(data);
+
+    if (status != napi_ok){
+        std::cout << "ERROR: status != napi_ok " << __FUNCTION__ << std::endl;
+        return false;
+    }
+
+    bool repeat;
+    switch (type){
+        case ActionType::once: 
+            repeat = false;
+            tsfn.Release();
+            break;
+        case ActionType::repeat:
+            repeat = true;
+            break;
+        case ActionType::cond: return true;
+            repeat = future.get();
+            if (!repeat){
+                tsfn.Release();
+            }
+            break;
+    }
+    return repeat;
+}
+
+std::shared_ptr<std::vector<Event::Parameter>> Event::_convertArgs(const Napi::CallbackInfo& info){
+    auto params = std::make_shared<std::vector<Parameter>>();
+    for (int i = 0; i < info.Length(); ++i){
+        auto& param = params->emplace_back(info[i]);
+        if (param.getError()){
+            Napi::Error::New(info.Env(), param.getError().value()).ThrowAsJavaScriptException();
+        }
+    }
+    return params;
+}
+
+Napi::Promise Event::_addJsPromise(Napi::Env env){
+    auto deffered = Napi::Promise::Deferred::New(env);
+    auto resolve = Napi::Function::New(env, [deffered](const Napi::CallbackInfo& info){deffered.Resolve(deffered.Env().Null());});
+    auto tsfn = Napi::TypedThreadSafeFunction<>::New(env, resolve, __FUNCTION__, 0, 1);
+
+    _native->addActionQueued([tsfn](){
+        tsfn.NonBlockingCall();
         tsfn.Release();
+        return false;
     });
+    return deffered.Promise();
 }

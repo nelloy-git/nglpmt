@@ -8,28 +8,53 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function demo(ctx) {
-    for (let i = 0; i < 10; i++) {
-        if (isMainThread){
-            await ctx.start();
-            await ctx.wait();
+let used_id = [];
+
+async function demo(event) {
+    return new Promise(async (resolve) => {
+        let name = isMainThread ? 'Main' : 'Worker';
+        for (let i = 0; i < 5; i++) {
+            console.log("JS loop " + name + ": " + i);
+
+            let id = event.addActionQueued("repeat", (a1, a2, a3) => {
+                console.log(name + ": " + a1 + ", " + a2 + ", " + a3);
+            })
+            used_id.push(id);
+
+            if (isMainThread){
+                console.log("JS emit");
+                await event.emitQueued(i, i / 10);
+                await sleep(1);
+            } 
         }
+        resolve(true);
+    })
+}
+
+async function run(){
+    let worker
+    if (isMainThread) {
+        // worker = new Worker(__filename);
+        await sleep(70);
     }
-    console.log('Done JS');
+    let event = new testAddon.Event('Test');
+    await demo(event);
+
+    if (isMainThread) {
+        console.log("jsTerminate");
+        // worker.terminate();
+
+        for (var i = 0; i < used_id.length; i++) {
+            event.delAction(used_id[i]);
+        }
+        console.log("jsCleanup");
+
+        event.addActionQueued("once", (a1, a2, a3) => {
+            console.log("Main: " + a1 + ", " + a2 + ", " + a3);
+        })
+        console.log("jsPushed");
+        await event.emitQueued(0, 0, 0);
+    }
 }
 
-let ctx
-if (isMainThread) {
-    const worker = new Worker(__filename);
-    ctx = new testAddon.Context('Test');
-    // ctx.onRun((ms) => {console.log("Main: " + ms + " ms");}, 30);
-    ctx.onRun((ms) => {}, (ms) => {console.log("Main: " + ms + " ms"); return true;});
-    // ctx.onKey((key_data) => {console.log(key_data.key + " " + key_data.action)});
-
-    demo(ctx);
-} else {
-    ctx = new testAddon.Context('Test');
-    ctx.onRun((ms) => {console.log("Worker: " + ms + " ms");}, 3);
-
-    demo(ctx)
-}
+run();

@@ -24,7 +24,7 @@
           }],
           ['OS=="win"', {
             'libraries': [
-                "<(module_root_dir)/glfw3.dll",
+                "<(module_root_dir)/3rd_party/glfw_3.3.8/lib-vc2022/glfw3dll.lib",
                 "<(module_root_dir)/3rd_party/vld/vld.lib"
             ],
           }]
@@ -32,7 +32,7 @@
         'dependencies': [
             "<!(node -p \"require('node-addon-api').gyp\")"
         ],
-        'defines': [ 'NAPI_CPP_EXCEPTIONS', 'NGLPMT_DEBUG' ],
+        'defines': [ 'NGLPMT_DEBUG' ],
         'msvs_settings': {
             'VCCLCompilerTool': { "ExceptionHandling": 1, 'AdditionalOptions': [ '-std:c++20', '-W3'] }
       }

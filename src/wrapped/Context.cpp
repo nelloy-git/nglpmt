@@ -1,165 +1,116 @@
 #include "wrapped/Context.hpp"
 
+#include "native/utils/GlobalThreadPool.hpp"
+#include "wrapped/utils/NativeEvent.hpp"
+
 using namespace nglpmt;
+using namespace nglpmt::js;
 
-std::mutex Context::_static_lock;
-std::unordered_map<std::string, std::weak_ptr<native::Context>> Context::_reserved;
-
-void Context::Init(Napi::Env env, Napi::Object exports) {
+Napi::Function Context::createJsConstructor(Napi::Env env) {
     // This method is used to hook the accessor and method callbacks
-    Napi::Function constructor_func = DefineClass(env, "Context", {
+    return DefineClass(env, "Context", {
         InstanceMethod<&Context::release>("release", static_cast<napi_property_attributes>(napi_writable | napi_configurable)),
         InstanceMethod<&Context::start>("start", static_cast<napi_property_attributes>(napi_writable | napi_configurable)),
-        InstanceMethod<&Context::wait>("wait", static_cast<napi_property_attributes>(napi_writable | napi_configurable)),
         InstanceMethod<&Context::onRun>("onRun", static_cast<napi_property_attributes>(napi_writable | napi_configurable))
     });
-
-    exports.Set("Context", constructor_func);
-
-    // Napi::FunctionReference* constructor = new Napi::FunctionReference();
-    // *constructor = Napi::Persistent(constructor_func);
-
-    // env.SetInstanceData<Napi::FunctionReference>(constructor);
 }
 
 Context::Context(const Napi::CallbackInfo& info) :
     Napi::ObjectWrap<Context>(info){
-    std::lock_guard lg(_static_lock);
+    static const native::Context::Parameters default_params{.title = _name, .width = 640, .height = 480};
 
-    _name = info[0].As<Napi::String>();
-    auto iter = _reserved.find(_name);
-
-    std::shared_ptr<native::Context> native_ptr;
-    if (iter == _reserved.end()){
-        native_ptr = native::Context::make({.title = _name, .width = 640, .height = 480});
-        _reserved[_name] = native_ptr;
-    } else {
-        native_ptr = iter->second.lock();
-        if (!native_ptr){
-            native_ptr = native::Context::make({.title = _name, .width = 640, .height = 480});
+    _native = _getMap().getOrMake(info[0].As<Napi::String>(), &native::Context::make, default_params);
+    _on_run = NativeEvent<std::weak_ptr<native::Context>, const std::chrono::milliseconds&>::make(
+        _native->onRun,
+        [](Napi::Env env, std::weak_ptr<native::Context> ctx, const std::chrono::milliseconds& ms){
+            return std::vector<Napi::Value>({Napi::Number::New(env, ms.count())});
         }
-        _reserved[_name] = native_ptr;
-    }
-
-    _native = native_ptr;
+    );
 }
 
 Context::~Context(){
 }
 
 Napi::Value Context::release(const Napi::CallbackInfo& info){
+    std::cout << __FUNCTION__ << std::endl;
     _native.reset();
+    _on_run.reset();
+    std::cout << __FUNCTION__ << std::endl;
     return info.Env().Null();
 }
 
 Napi::Value Context::start(const Napi::CallbackInfo& info){
     auto deffered = Napi::Promise::Deferred::New(info.Env());
-    auto release_callback = Napi::Function::New(info.Env(), [deffered](const Napi::CallbackInfo& info){deffered.Resolve(info.Env().Null());});
-    auto tsfn = Napi::ThreadSafeFunction::New(info.Env(), release_callback, "nglpmt::Context.start callback", 0, 1);
 
-    std::thread th([native = _native, tsfn](){
-        native->start();
-        tsfn.NonBlockingCall();
-        tsfn.Release();
+    auto future = native::GlobalThreadPool::get()->submit([native = _native, deffered](){
+        native->run();
+        deffered.Resolve(Napi::Boolean::New(deffered.Env(), true));
     });
-    th.detach();
     return deffered.Promise();
-    // return Napi::Boolean::New(info.Env(), _native->start());
-}
-
-Napi::Value Context::wait(const Napi::CallbackInfo& info){
-    auto deffered = Napi::Promise::Deferred::New(info.Env());
-    auto release_callback = Napi::Function::New(info.Env(), [deffered](const Napi::CallbackInfo& info){deffered.Resolve(info.Env().Null());});
-    auto tsfn = Napi::ThreadSafeFunction::New(info.Env(), release_callback, "nglpmt::Context.wait callback", 0, 1);
-
-    std::thread th([native = _native, tsfn](){
-        native->wait();
-        tsfn.NonBlockingCall();
-        tsfn.Release();
-    });
-    th.detach();
-    return deffered.Promise();
-}
-
-void Context::_jsOnRunActionCallback(Napi::Env env, Napi::Function jsCallback, unsigned int* ms){
-    jsCallback.Call( {Napi::Number::New( env, double(*ms) )} );
-    delete ms;
-};
-
-struct jsOnRunConditionCallbackData {
-    std::promise<void> barrier;
-    unsigned int ms;
-    bool result;
-};
-
-void _jsOnRunConditionCallback(Napi::Env env, Napi::Function jsCallback, jsOnRunConditionCallbackData* data){
-    std::cout << "Ptr: " << data << std::endl;
-    auto js_result = jsCallback.Call( {Napi::Number::New( env, data->ms )} );
-    data->result = js_result.As<Napi::Boolean>();
-    data->barrier.set_value();
 }
 
 Napi::Value Context::onRun(const Napi::CallbackInfo& info){
-    auto action = Napi::ThreadSafeFunction::New(
-        info.Env(), info[0].As<Napi::Function>(), "nglpmt::Context.onRun callback", 0, 1
-    );
 
-    if (info.Length() == 1)
-    {
-        _native->onRun->push([action](const std::chrono::milliseconds& ms){
-            unsigned int* count = new unsigned int(ms.count());
-            action.NonBlockingCall(count, &Context::_jsOnRunActionCallback);
-            action.Release();
-        });
+    if (info.Length() == 1){
+        _on_run->push(info[0].As<Napi::Function>());
     }
-    else if (info[1].IsNumber())
-    {
-        auto repeats_left = new int(info[1].As<Napi::Number>().Int32Value());
-        _native->onRun->push([action, repeats_left](const std::chrono::milliseconds& ms){
-            unsigned int* count = new unsigned int(ms.count());
-            action.NonBlockingCall(count, &Context::_jsOnRunActionCallback);
+    // else if (info[1].IsNumber())
+    // {
+    //     auto repeats_left = new int(info[1].As<Napi::Number>().Int32Value());
+    //     _native->onRun->push([action, repeats_left](const std::chrono::milliseconds& ms){
+    //         unsigned int* count = new unsigned int(ms.count());
+    //         action.NonBlockingCall(count, &Context::_jsOnRunActionCallback);
             
-            --*repeats_left;
-            if (*repeats_left == 0){
-                action.Release();
-                delete repeats_left;
-            }
-        }, [repeats_left](){
-            return *repeats_left == 1 ? native::EventConditionResult::Once
-                                      : native::EventConditionResult::Continue;
-        });
-    }
+    //         --*repeats_left;
+    //         if (*repeats_left == 0){
+    //             action.Release();
+    //             delete repeats_left;
+    //         }
+    //     }, [repeats_left](){
+    //         return *repeats_left == 1 ? native::EventConditionResult::Once
+    //                                   : native::EventConditionResult::Continue;
+    //     });
+    // }
     else if (info[1].IsFunction()){
-        auto condition = Napi::ThreadSafeFunction::New(
-            info.Env(), info[1].As<Napi::Function>(), "nglpmt::Context.onRun condition", 100, 1
-        );
+        // NativeEvent::push_js_with_condition<std::shared_ptr<native::Context>, const std::chrono::milliseconds&>(
+        //     *_native->onRun,
+        //     info[0].As<Napi::Function>(),
+        //     info[1].As<Napi::Function>(),
+        //     [](Napi::Env env, std::shared_ptr<native::Context> ctx, const std::chrono::milliseconds& ms){
+        //         return std::vector<Napi::Value>({Napi::Number::New(env, ms.count())});
+        //     }
+        // );
 
-        _native->onRun->push([action](const std::chrono::milliseconds& ms){
-            unsigned int* count = new unsigned int(ms.count());
-            action.NonBlockingCall(count, &Context::_jsOnRunActionCallback);
-        }, [action, condition](const std::chrono::milliseconds& ms){
-            std::cout << "Condition" << std::endl;
-            auto data = new jsOnRunConditionCallbackData;
-            data->ms = ms.count();
-            data->result = false;
-            auto future = data->barrier.get_future();
+        // auto condition = Napi::ThreadSafeFunction::New(
+        //     info.Env(), info[1].As<Napi::Function>(), "nglpmt::Context.onRun condition", 100, 1
+        // );
 
-            condition.BlockingCall(data, &_jsOnRunConditionCallback);
-            future.wait();
+        // _native->onRun->push([action](const std::chrono::milliseconds& ms){
+        //     unsigned int* count = new unsigned int(ms.count());
+        //     action.NonBlockingCall(count, &Context::_jsOnRunActionCallback);
+        // }, [action, condition](const std::chrono::milliseconds& ms){
+        //     std::cout << "Condition" << std::endl;
+        //     auto data = new jsOnRunConditionCallbackData;
+        //     data->ms = ms.count();
+        //     data->result = false;
+        //     auto future = data->barrier.get_future();
 
-            std::cout << "Done " << data << std::endl;
+        //     condition.BlockingCall(data, &_jsOnRunConditionCallback);
+        //     future.wait();
 
-            bool result = data->result;
-            delete data;
+        //     std::cout << "Done " << data << std::endl;
 
-            if (result){
-                return native::EventConditionResult::Continue;
-            } else {
-                action.Release();
-                condition.Release();
-                return native::EventConditionResult::Free;
-            }
-        });
+        //     bool result = data->result;
+        //     delete data;
+
+        //     if (result){
+        //         return native::EventConditionResult::Continue;
+        //     } else {
+        //         action.Release();
+        //         condition.Release();
+        //         return native::EventConditionResult::Free;
+        //     }
+        // });
 
     }
 
@@ -168,12 +119,12 @@ Napi::Value Context::onRun(const Napi::CallbackInfo& info){
 
 namespace {
 
-struct OnKeyData {
-    native::Key key;
-    int scancode;
-    native::KeyAction action;
-    native::KeyMods mods;
-};
+// struct OnKeyData {
+//     native::Key key;
+//     int scancode;
+//     native::KeyAction action;
+//     native::KeyMods mods;
+// };
 
 }
 
@@ -221,3 +172,8 @@ Napi::Value Context::onKey(const Napi::CallbackInfo& info){
 
 //     // Napi::Number value = info[0].As<Napi::Number>();
 // }
+
+MapMT<std::u16string, native::Context>& Context::_getMap(){
+    static MapMT<std::u16string, native::Context> map;
+    return map;
+}

@@ -11,53 +11,62 @@ std::atomic<unsigned int> Context::_glfw_windows = 0;
 std::shared_ptr<Context> Context::make(const Parameters& params){
     auto ctx = std::shared_ptr<Context>(new Context);
     auto future = ctx->_gl_thread->submit([ctx, params](){
+        std::cout << "GL: " << std::this_thread::get_id() << std::endl;
         ctx->_initGl(params);
     });
     ctx->_gl_thread->unpause();
     ctx->_gl_thread->wait_for_tasks();
-    ctx->_gl_thread->pause();
-
-
+    // ctx->_gl_thread->pause();
     return ctx;
 }
 
 Context::Context() :
     SharedObject(),
     _gl_thread(new BS::thread_pool(1)),
-    _last_start(std::chrono::steady_clock::now()),
-    onRun(Event<Context*, const std::chrono::milliseconds&>::make(_gl_thread))
-    // onDetsroy(_gl_thread)
+    _init_time(std::chrono::steady_clock::now()),
+    _last_start_time(std::chrono::steady_clock::now()),
+    _last_finish_time(std::chrono::steady_clock::now()),
+
+    // onStart(decltype(onRun)::element_type::make()),
+    onRun(decltype(onRun)::element_type::make(_gl_thread))
+    // onFinish(decltype(onRun)::element_type::make())
     {
+
+    // onRun->push([](std::weak_ptr<Context> weak_self){
+    //     auto self = weak_self.lock();
+    //     if (not self){
+    //         return false;
+    //     }
+
+    //     glfwPollEvents();
+    //     glfwSwapBuffers(self->_window.get());
+    //     return true;
+    // });
 }
 
 Context::~Context(){
-    auto future = _gl_thread->submit([this](){
-        // onDetsroy.emit(this);
-    });
-
+    std::cout << __FUNCTION__ << std::endl;
+    // auto future = run();
+    // future.wait();
     _gl_thread->unpause();
     _gl_thread->wait_for_tasks();
-    _gl_thread->pause();
+    std::cout << __FUNCTION__ << std::endl;
 }
 
-bool Context::start(){
-    onRun->push([this](){
-        glfwPollEvents();
-        glfwSwapBuffers(_window.get());
-        _gl_thread->pause();
-    });
-
+std::future<void> Context::run(){
     auto now = std::chrono::steady_clock::now();
-    auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(now - _last_start);
-    _last_start = now;
+    auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(now - _last_start_time);
+    _last_start_time = now;
 
-    onRun->emit(this, dt);
+    onRun->addActionQueued([](std::weak_ptr<Context> weak_self){
+        std::cout << "Here" << std::endl;
+        // auto self = weak_self.lock();
+        // if (self){self->_gl_thread->pause();}
+        return false;
+    });
+    auto future = onRun->emitQueued(this->weak_from_this(), dt);
     _gl_thread->unpause();
-    return true;
-}
-
-void Context::wait(){
-    _gl_thread->wait_for_tasks();
+    return future;
 }
 
 const std::thread::id& Context::getThreadId() const {

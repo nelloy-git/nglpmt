@@ -4,32 +4,33 @@
 #include <memory>
 
 #include "napi.h"
-#include "native/Context.hpp"
 
-namespace nglpmt {
+#include "native/Context.hpp"
+#include "wrapped/utils/MapMT.hpp"
+#include "wrapped/utils/NativeEvent.hpp"
+
+namespace nglpmt::js {
 
 class Context : public Napi::ObjectWrap<Context> {
 public:
-    static void Init(Napi::Env env, Napi::Object exports);
+    static Napi::Function createJsConstructor(Napi::Env env);
 
     Context(const Napi::CallbackInfo& info);
     ~Context();
 
     Napi::Value release(const Napi::CallbackInfo& info);
     Napi::Value start(const Napi::CallbackInfo& info);
-    Napi::Value wait(const Napi::CallbackInfo& info);
 
     Napi::Value onRun(const Napi::CallbackInfo& info);
     Napi::Value onKey(const Napi::CallbackInfo& info);
     
 
 private:
-    static std::mutex _static_lock;
-    static std::unordered_map<std::string, std::weak_ptr<native::Context>> _reserved;
-    static void _jsOnRunActionCallback(Napi::Env env, Napi::Function jsCallback, unsigned int* ms);
-
     std::string _name;
     std::shared_ptr<native::Context> _native;
+    std::shared_ptr<NativeEvent<std::weak_ptr<native::Context>, const std::chrono::milliseconds&>> _on_run;
+    
+    static MapMT<std::u16string, native::Context>& _getMap(); 
 
 };
 

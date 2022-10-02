@@ -8,8 +8,8 @@
 #include "wrapped/utils/Event.hpp"
 
 Napi::Object InitAll(Napi::Env env, Napi::Object exports) {
-    nglpmt::Context::Init(env, exports);
-    nglpmt::Event::Init(env, exports);
+    exports.Set("Context", nglpmt::js::Context::createJsConstructor(env));
+    exports.Set("Event", nglpmt::js::Event::createJsConstructor(env));
 
     return exports;
 }

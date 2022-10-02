@@ -5,7 +5,7 @@
 #include <mutex>
 #include <unordered_map>
 
-namespace nglpmt {
+namespace nglpmt::js {
 
 template<typename K, typename V>
 class MapMT {
@@ -26,9 +26,10 @@ public:
                 : std::shared_ptr<V>();
     }
 
+    template<typename ... Args>
     std::shared_ptr<V> getOrMake(const K& key,
-                                 const auto& constructor,
-                                 auto&&... args){
+                                 std::shared_ptr<V>(*constructor)(Args...),
+                                 Args&&... args){
         std::lock_guard lg(_lock);
         auto iter = _map.find(key);
 
@@ -51,4 +52,4 @@ private:
 
 };
 
-} // namespace nglpmt
+} // namespace nglpmt::js
