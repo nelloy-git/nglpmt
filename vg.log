@@ -1,0 +1,65 @@
+JS loop Main: 0
+Push
+JS emit
+endMain: 0, 0, undefined
+JS loop Main: 1
+
+Push
+JS emit
+end
+Main: 1, 0.1, undefined
+Main: 1, 0.1, undefined
+JS loop Main: 2
+Push
+JS emit
+end
+Main: 2, 0.2, undefined
+Main: 2, 0.2, undefined
+Main: 2, 0.2, undefined
+JS loop Main: 3
+Push
+JS emit
+endJS loop Main: 4
+
+Push
+JS emit
+Main: 3, 0.3, undefined
+Main: 3, 0.3, undefined
+Main: 3, 0.3, undefined
+Main: 3, 0.3, undefined
+end
+Main: 4, 0.4, undefined
+Main: 4, 0.4, undefined
+Main: 4, 0.4, undefined
+Main: 4, 0.4, undefined
+Main: 4, 0.4, undefined
+jsTerminate
+delActionNow
+Push
+operator() true
+end
+delActionNow
+Push
+operator() true
+end
+delActionNow
+Push
+operator() true
+end
+delActionNow
+Push
+operator() true
+end
+delActionNow
+Push
+operator() true
+endjsCleanup
+
+Push
+jsPushed
+endMain: 0, 0, 0
+
+delActionNow
+Push
+operator() false
+end

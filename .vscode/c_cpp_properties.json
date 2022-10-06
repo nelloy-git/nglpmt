@@ -7,12 +7,12 @@
                 "src",
                 "node_modules/node-addon-api",
                 "C:/Users/Nello/AppData/Local/node-gyp/Cache/16.16.0/include/node",
-                "/usr/include/nodejs/src/",
+                "/usr/include/nodejs/src/**",
                 "3rd_party/glad/include",
                 "3rd_party/glfw_3.3.8/include",
                 "3rd_party/thread-pool"
             ],
-            "defines": ["NAPI_CPP_EXCEPTIONS", "NGLPMT_DEBUG"],
+            "defines": ["NGLPMT_DEBUG", "NAPI_VERSION=6"],
             "compilerPath": "D:/VisualStudio/VC/Tools/MSVC/14.29.30037/bin/Hostx64/x64/cl.exe",
             "cppStandard": "c++20"
         }

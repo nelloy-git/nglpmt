@@ -28,17 +28,17 @@ class Event : public SharedObject<Event<Args...>> {
 
 public:
     using ID = uint64_t;
+    using IdMap = std::unordered_map<ID, std::shared_ptr<ActionData>>;
 
-    static std::shared_ptr<Event> make(const std::shared_ptr<BS::thread_pool> emit_pool = GlobalThreadPool::get(),
-                                       const std::shared_ptr<BS::thread_pool> manager_pool = GlobalThreadPool::get()){
-        return std::shared_ptr<Event>(new Event<Args...>(emit_pool, manager_pool));
+    static std::shared_ptr<Event> make(const std::shared_ptr<BS::thread_pool> emitter_pool = GlobalThreadPool::get()){
+        return std::shared_ptr<Event>(new Event<Args...>(emitter_pool));
     }
     Event(const Event&) = delete;
     Event(const Event&&) = delete;
     virtual ~Event();
 
-    ID addActionQueued(const auto& action, const SrcLoc& src_loc = SrcLoc{});
-    ID addActionNow(const auto& action, const SrcLoc& src_loc = SrcLoc{});
+    std::pair<ID, std::future<void>> addActionQueued(const auto& action, const SrcLoc& src_loc = SrcLoc{});
+    std::pair<ID, std::future<void>> addActionNow(const auto& action, const SrcLoc& src_loc = SrcLoc{});
 
     std::future<bool> delActionQueued(const ID& id);
     std::future<bool> delActionNow(const ID& id);
@@ -47,19 +47,61 @@ public:
     std::future<void> emitNow(const Args&... args, const SrcLoc& src_loc = SrcLoc{});
 
 protected:
-    Event(const std::shared_ptr<BS::thread_pool> emit_pool,
-          const std::shared_ptr<BS::thread_pool> manager_pool);
+    Event(const std::shared_ptr<BS::thread_pool> emitter_pool);
 
 private:
-    std::mutex _lock;
-    std::atomic<ID> _action_id;
-    std::unordered_map<ID, std::shared_ptr<ActionData>> _actions_in_use;
-    std::shared_ptr<CmdQueue> _manager;
-    std::shared_ptr<BS::thread_pool> _emit_pool;
+    std::shared_ptr<std::mutex> _lock;
+    std::shared_ptr<CmdQueue> _emitter;
+    std::shared_ptr<IdMap> _active;
+    std::shared_ptr<IdMap> _queued;
 
-    void _pushExecuteEmit(std::shared_ptr<std::promise<void>> promise, const Args&... args);
-    void _executeEmit(std::shared_ptr<std::promise<void>> promise, const Args&... args);
-    void _executeDelete(const ID& id, std::shared_ptr<std::promise<bool>> promise);
+    static ID _getUniqId();
+
+    static bool _addAction(const ID& id, std::mutex& lock, IdMap& queued, IdMap& active){
+        std::lock_guard lg(lock);
+        auto iter = queued.find(id);
+        if (iter == queued.end()){
+            return false;
+        }
+        active.insert_or_assign(iter->first, iter->second);
+        queued.erase(iter);
+        return true;
+    }
+
+    static bool _removeAction(const ID& id, std::mutex& lock, IdMap& queued, IdMap& active){
+        std::lock_guard lg(lock);
+        auto queued_iter = queued.find(id);
+        bool queued_found = (queued_iter != queued.end());
+        if (queued_found){
+            queued.erase(queued_iter);
+        }
+
+        auto active_iter = active.find(id);
+        bool active_found = (active_iter != active.end());
+        if (active_found){
+            active.erase(active_iter);
+        }
+
+        return queued_found || active_found;
+    }
+
+    static void _emitActions(std::mutex& lock, IdMap& active, Args... args){
+        std::lock_guard lg(lock);
+        IdMap new_map;
+        for (auto& data : active){
+            bool repeat = false;
+            try {
+                repeat = data.second->func(args...);
+            } catch (const std::exception& e) {
+                std::cout << e.what() << std::endl;
+            }
+
+            if (repeat){
+                new_map[data.first] = data.second;
+            }
+        }
+        active = new_map;
+    }
 };
 
 
@@ -67,164 +109,113 @@ private:
 
 
 template<typename ... Args>
-inline Event<Args...>::Event(const std::shared_ptr<BS::thread_pool> emit_pool,
-                               const std::shared_ptr<BS::thread_pool> manager_pool) :
-    _action_id(0),
-    _manager(CmdQueue::make(manager_pool)),
-    _emit_pool(emit_pool){
-    _emit_pool->unpause();
+inline Event<Args...>::Event(const std::shared_ptr<BS::thread_pool> emitter_pool) :
+    _lock(new std::mutex),
+    _emitter(CmdQueue::make(emitter_pool)),
+    _active(new IdMap),
+    _queued(new IdMap){
 }
 
 template<typename ... Args>
-inline Event<Args...>::~Event<Args...>(){
+inline Event<Args...>::~Event(){
 }
 
 template<typename ... Args>
-inline std::future<void> Event<Args...>::emitQueued(const Args&... args,
-                                             const SrcLoc& src_loc){
-    auto weak_self = this->weak_from_this();
+inline std::pair<typename Event<Args...>::ID, std::future<void>>
+Event<Args...>::addActionQueued(const auto& action,
+                                const SrcLoc& src_loc){
+    auto id = _getUniqId();
+    auto data = std::make_shared<ActionData>(action, src_loc);
     auto promise = std::make_shared<std::promise<void>>();
 
-    _manager->push_back([weak_self, promise, args...](){
-        auto self = weak_self.lock();
-        if (!self){return;}
-        self->_pushExecuteEmit(promise, args...);
+    {
+        std::lock_guard lg(*_lock);
+        _queued->insert_or_assign(id, data);
+    }
+    
+    _emitter->push_back([id, promise, lock = _lock, active = _active, queued = _queued](){
+        _addAction(id, *lock, *queued, *active);
+        promise->set_value();
     });
 
-    return promise->get_future();
+    return std::make_pair(id, promise->get_future());
 }
 
 template<typename ... Args>
-inline std::future<void> Event<Args...>::emitNow(const Args&... args,
-                                          const SrcLoc& src_loc){
-    auto weak_self = this->weak_from_this();
+inline std::pair<typename Event<Args...>::ID, std::future<void>>
+Event<Args...>::addActionNow(const auto& action,
+                             const SrcLoc& src_loc){
+    auto id = _getUniqId();
+    auto data = std::make_shared<ActionData>(action, src_loc);
     auto promise = std::make_shared<std::promise<void>>();
 
-    _manager->push_front([weak_self, promise, args...](){
-        std::cout << __FUNCTION__ << std::endl;
-        auto self = weak_self.lock();
-        if (!self){return;}
-        self->_pushExecuteEmit(promise, args...);
-    });
-
-    return promise->get_future();
-}
-
-template<typename ... Args>
-inline std::future<bool> Event<Args...>::delActionQueued(const ID& id){
-    auto weak_self = this->weak_from_this();
-    auto promise = std::make_shared<std::promise<bool>>();
-
-    _manager->push_back([weak_self, id, promise](){
-        auto self = weak_self.lock();
-        if (!self){return;}
-        self->_executeDelete(id, promise);
-    });
-    return promise->get_future();
-}
-
-template<typename ... Args>
-inline std::future<bool> Event<Args...>::delActionNow(const ID& id){
-    auto weak_self = this->weak_from_this();
-    auto promise = std::make_shared<std::promise<bool>>();
-
-    _manager->push_front([weak_self, id, promise](){
-        auto self = weak_self.lock();
-        if (!self){return;}
-        (self->_executeDelete(id, promise));
-    });
-    return promise->get_future();
-}
-
-template<typename ... Args>
-inline Event<Args...>::ID Event<Args...>::addActionQueued(const auto& action,
-                                        const SrcLoc& src_loc){
-    auto weak_self = this->weak_from_this();
-    auto id = _action_id.fetch_add(1);
-    auto data = std::make_shared<ActionData>(action, src_loc);
-
-    _manager->push_back([weak_self, id, data](){
-        std::cout << __FUNCTION__ << std::endl;
-        auto self = weak_self.lock();
-        if (!self){return;}
-
-        std::lock_guard lg(self->_lock);
-        self->_actions_in_use[id] = data;
-    });
-
-    return id;
-}
-
-template<typename ... Args>
-inline Event<Args...>::ID Event<Args...>::addActionNow(const auto& action,
-                                           const SrcLoc& src_loc){
-    auto weak_self = this->weak_from_this();
-    auto id = _action_id.fetch_add(1);
-    auto data = std::make_shared<ActionData>(action, src_loc);
-
-    _manager->push_front([weak_self, id, data](){
-        std::cout << __FUNCTION__ << std::endl;
-        auto self = weak_self.lock();
-        if (!self){return;}
-
-        std::lock_guard lg(self->_lock);
-        self->_actions_in_use[id] = data;
-    });
-
-    return id;
-}
-
-template<typename ... Args>
-inline void Event<Args...>::_pushExecuteEmit(std::shared_ptr<std::promise<void>> promise, const Args&... args){
-    auto weak_self = this->weak_from_this();
-    static_cast<void>(_emit_pool->submit([weak_self, promise, args...](){
-        std::cout << __FUNCTION__ << std::endl;
-        std::shared_ptr<Event<Args...>> self = weak_self.lock();
-        if (!self){
-            promise->set_value();
-            return;
-        }
-        self->_executeEmit(promise, args...);
-    }));
-}
-
-template<typename ... Args>
-inline void Event<Args...>::_executeEmit(std::shared_ptr<std::promise<void>> promise, const Args&... args){
-    std::lock_guard lg(_lock);
-    std::unordered_map<ID, std::shared_ptr<ActionData>> new_map;
-    for (auto& data : _actions_in_use){
-        std::cout << __FUNCTION__ << std::endl;
-        bool repeat = false;
-        try {
-            repeat = data.second->func(args...);
-        } catch (const std::exception& e) {
-            std::cout << e.what() << std::endl;
-        }
-
-        if (repeat){
-            new_map[data.first] = data.second;
-        }
+    {
+        std::lock_guard lg(*_lock);
+        _queued->insert_or_assign(id, data);
     }
-    _actions_in_use.clear();
-    _actions_in_use.swap(new_map);
-    promise->set_value();
+
+    _emitter->push_front([id, promise, lock = _lock, active = _active, queued = _queued](){
+        _addAction(id, *lock, *queued, *active);
+        promise->set_value();
+    });
+
+    return std::make_pair(id, promise->get_future());
 }
 
 template<typename ... Args>
-inline void Event<Args...>::_executeDelete(const ID& id, std::shared_ptr<std::promise<bool>> promise){
-    std::lock_guard lg(_lock);
-    auto iter = _actions_in_use.find(id);
-    bool found = iter != _actions_in_use.end();
-    if (found){
-        _actions_in_use.erase(iter);
-    }
-    std::cout << __FUNCTION__ << " set_value" << std::endl;
-    try {
+inline std::future<bool>
+Event<Args...>::delActionQueued(const ID& id){
+    auto promise = std::make_shared<std::promise<bool>>();
+    _emitter->push_back([id, promise, lock = _lock, active = _active, queued = _queued](){
+        bool found = _removeAction(id, *lock, *queued, *active);
         promise->set_value(found);
-    } catch (const std::exception& e){
-        std::cout << e.what() << std::endl;
-    }
-    std::cout << __FUNCTION__ << " set_value end" << std::endl;
+    });
+    return promise->get_future();
+}
+
+template<typename ... Args>
+inline std::future<bool>
+Event<Args...>::delActionNow(const ID& id){
+    std::cout << __FUNCTION__ << std::endl;
+    auto promise = std::make_shared<std::promise<bool>>();
+    _emitter->push_front([id, promise, lock = _lock, active = _active, queued = _queued](){
+        bool found = _removeAction(id, *lock, *queued, *active);
+        std::cout << __FUNCTION__ << (found ? " true" : " false") << std::endl;
+        promise->set_value(found);
+    });
+    return promise->get_future();
+}
+
+template<typename ... Args>
+inline std::future<void>
+Event<Args...>::emitQueued(const Args&... args,
+                           const SrcLoc& src_loc){
+    auto promise = std::make_shared<std::promise<void>>();
+    _emitter->push_back([promise, lock = _lock, active = _active, args...](){
+        _emitActions(*lock, *active, args...);
+        promise->set_value();
+    });
+
+    return promise->get_future();
+}
+
+template<typename ... Args>
+inline std::future<void>
+Event<Args...>::emitNow(const Args&... args,
+                        const SrcLoc& src_loc){
+    auto promise = std::make_shared<std::promise<void>>();
+    _emitter->push_front([promise, lock = _lock, active = _active, args...](){
+        _emitActions(*lock, *active, args...);
+        promise->set_value();
+    });
+
+    return promise->get_future();
+}
+
+template<typename ... Args>
+inline Event<Args...>::ID Event<Args...>::_getUniqId(){
+    static std::atomic<ID> id(0);
+    return id.fetch_add(1);
 }
 
 } // namespace nglpmt::native

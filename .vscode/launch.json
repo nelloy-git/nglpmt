@@ -4,7 +4,8 @@
        "request": "launch",
        "name": "Launch Program",
        "preLaunchTask": "npm: build:dev",
-       "program": "C:\\Program Files\\nodejs\\node.exe",
+      //  "program": "C:\\Program Files\\nodejs\\node.exe",
+       "program": "node",
        "args": [
           "${workspaceFolder}/index.js"
        ]

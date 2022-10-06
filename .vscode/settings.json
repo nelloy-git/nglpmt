@@ -81,6 +81,8 @@
         "memory_resource": "cpp",
         "numeric": "cpp",
         "string_view": "cpp",
-        "cinttypes": "cpp"
+        "cinttypes": "cpp",
+        "numbers": "cpp",
+        "semaphore": "cpp"
     },
 }

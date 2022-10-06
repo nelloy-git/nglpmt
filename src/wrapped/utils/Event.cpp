@@ -1,5 +1,6 @@
 #include "wrapped/utils/Event.hpp"
 
+#include <optional>
 #include <variant>
 
 #include "native/utils/GlobalThreadPool.hpp"
@@ -83,11 +84,11 @@ private:
 
 Napi::Function Event::createJsConstructor(Napi::Env env){
     return DefineClass(env, "Event", {
-        InstanceMethod<&Event::addActionQueued>("addActionQueued", static_cast<napi_property_attributes>(napi_default_method)),
-        InstanceMethod<&Event::addActionNow>("addActionNow", static_cast<napi_property_attributes>(napi_default_method)),
-        InstanceMethod<&Event::delAction>("delAction", static_cast<napi_property_attributes>(napi_default_method)),
-        InstanceMethod<&Event::emitQueued>("emitQueued", static_cast<napi_property_attributes>(napi_default_method)),
-        InstanceMethod<&Event::emitNow>("emitNow", static_cast<napi_property_attributes>(napi_default_method)),
+        InstanceMethod<&Event::addActionQueued>("addActionQueued", static_cast<napi_property_attributes>(napi_writable | napi_configurable)),
+        InstanceMethod<&Event::addActionNow>("addActionNow", static_cast<napi_property_attributes>(napi_writable | napi_configurable)),
+        InstanceMethod<&Event::delAction>("delAction", static_cast<napi_property_attributes>(napi_writable | napi_configurable)),
+        InstanceMethod<&Event::emitQueued>("emitQueued", static_cast<napi_property_attributes>(napi_writable | napi_configurable)),
+        InstanceMethod<&Event::emitNow>("emitNow", static_cast<napi_property_attributes>(napi_writable | napi_configurable)),
     });
 };
 
@@ -95,7 +96,7 @@ Event::Event(const Napi::CallbackInfo& info) :
     Napi::ObjectWrap<Event>(info),
     _destroying(new std::atomic<bool>(false)),
     _native(_getMap().getOrMake(info[0].As<Napi::String>(), &Event::NativeEvent::make,
-                                native::GlobalThreadPool::get(), native::GlobalThreadPool::get())),
+                                native::GlobalThreadPool::get())),
     _id2tsfn(new std::unordered_map<ID, Tsfn>){
 }
 
@@ -119,9 +120,9 @@ Napi::Value Event::addActionQueued(const Napi::CallbackInfo& info){
             return _nativeTsfnCallback(type, tsfn, params);
         }
     );
-    _id2tsfn->insert_or_assign(id, tsfn);
+    _id2tsfn->insert_or_assign(id.first, tsfn);
 
-    return Napi::BigInt::New(env, id);
+    return Napi::BigInt::New(env, id.first);
 }
 
 Napi::Value Event::addActionNow(const Napi::CallbackInfo& info){
@@ -137,9 +138,9 @@ Napi::Value Event::addActionNow(const Napi::CallbackInfo& info){
             return _nativeTsfnCallback(type, tsfn, params);
         }
     );
-    _id2tsfn->insert_or_assign(id, tsfn);
+    _id2tsfn->insert_or_assign(id.first, tsfn);
 
-    return Napi::BigInt::New(env, id);
+    return Napi::BigInt::New(env, id.first);
 }
 
 Napi::Value Event::delAction(const Napi::CallbackInfo& info){
@@ -249,7 +250,7 @@ bool Event::_nativeTsfnCallback(ActionType type,
 
 std::shared_ptr<std::vector<Event::Parameter>> Event::_convertArgs(const Napi::CallbackInfo& info){
     auto params = std::make_shared<std::vector<Parameter>>();
-    for (int i = 0; i < info.Length(); ++i){
+    for (size_t i = 0; i < info.Length(); ++i){
         auto& param = params->emplace_back(info[i]);
         if (param.getError()){
             Napi::Error::New(info.Env(), param.getError().value()).ThrowAsJavaScriptException();

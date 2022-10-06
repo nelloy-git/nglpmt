@@ -58,12 +58,12 @@ std::future<void> Context::run(){
     auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(now - _last_start_time);
     _last_start_time = now;
 
-    onRun->addActionQueued([](std::weak_ptr<Context> weak_self){
-        std::cout << "Here" << std::endl;
-        // auto self = weak_self.lock();
-        // if (self){self->_gl_thread->pause();}
-        return false;
-    });
+    // onRun->addActionQueued([](std::weak_ptr<Context> weak_self){
+    //     std::cout << "Here" << std::endl;
+    //     // auto self = weak_self.lock();
+    //     // if (self){self->_gl_thread->pause();}
+    //     return false;
+    // });
     auto future = onRun->emitQueued(this->weak_from_this(), dt);
     _gl_thread->unpause();
     return future;

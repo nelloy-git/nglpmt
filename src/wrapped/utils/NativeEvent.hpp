@@ -46,7 +46,7 @@ template<typename ... Args>
 class NativeEvent : public native::SharedObject<NativeEvent<Args...>> {
     static void _jsNativeCallback(Napi::Env env, Napi::Function jsCallback, NativeEventContext<Args...>* context, std::tuple<Args...>* data){
         auto result = jsCallback.Call(context->convert(env, *data));
-        context->setResult(result.As<Napi::Boolean>());
+        // context->setResult(result.As<Napi::Boolean>());
         delete data;
     };
     using TSFN = Napi::TypedThreadSafeFunction<NativeEventContext<Args...>, std::tuple<Args...>, &NativeEvent::_jsNativeCallback>;
@@ -108,7 +108,7 @@ private:
             context->setResult(false);
         }
         delete context;
-        delete finalizeData;
+        // delete finalizeData;
     }
 };
 

@@ -50,10 +50,7 @@ void CmdQueue::_execute(){
         std::lock_guard lg(_lock);
         cmd = _queue.front();
     }
-
-    std::cout << "start" << std::endl;
     cmd();
-    std::cout << "finish" << std::endl;
 
     std::lock_guard lg(_lock);
     _queue.pop_front();

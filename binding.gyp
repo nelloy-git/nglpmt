@@ -35,6 +35,6 @@
         'defines': [ 'NGLPMT_DEBUG' ],
         'msvs_settings': {
             'VCCLCompilerTool': { "ExceptionHandling": 1, 'AdditionalOptions': [ '-std:c++20', '-W3'] }
-      }
+        },
     }]
 }
