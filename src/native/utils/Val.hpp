@@ -33,7 +33,7 @@ public:
     Val(const V& data){_data = std::make_shared<T>(data);}
 
     template<typename V>
-    Val(sptr<V> data) : _data(data){
+    Val(std::shared_ptr<V> data) : _data(data){
         if constexpr (!is_void<T>){
             if (!data){
                 throw std::logic_error("non-void glwpp::util::Val can not be nullptr");

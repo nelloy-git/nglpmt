@@ -9,48 +9,40 @@ using namespace nglpmt::native;
 std::atomic<unsigned int> Context::_glfw_windows = 0;
 
 std::shared_ptr<Context> Context::make(const Parameters& params){
-    auto ctx = std::shared_ptr<Context>(new Context);
-    auto future = ctx->_gl_thread->submit([ctx, params](){
-        std::cout << "GL: " << std::this_thread::get_id() << std::endl;
-        ctx->_initGl(params);
-    });
-    ctx->_gl_thread->unpause();
-    ctx->_gl_thread->wait_for_tasks();
-    // ctx->_gl_thread->pause();
-    return ctx;
+    return std::shared_ptr<Context>(new Context(params));
 }
 
-Context::Context() :
+Context::Context(const Parameters& params) :
     SharedObject(),
     _gl_thread(new BS::thread_pool(1)),
     _init_time(std::chrono::steady_clock::now()),
     _last_start_time(std::chrono::steady_clock::now()),
     _last_finish_time(std::chrono::steady_clock::now()),
 
-    // onStart(decltype(onRun)::element_type::make()),
-    onRun(decltype(onRun)::element_type::make(_gl_thread))
-    // onFinish(decltype(onRun)::element_type::make())
-    {
+    onStart(decltype(onStart)::element_type::make(_gl_thread)),
+    onRun(decltype(onRun)::element_type::make(_gl_thread)),
+    onFinish(decltype(onFinish)::element_type::make(_gl_thread)),
+    onKey(decltype(onKey)::element_type::make(_gl_thread)){
 
-    // onRun->push([](std::weak_ptr<Context> weak_self){
-    //     auto self = weak_self.lock();
-    //     if (not self){
-    //         return false;
-    //     }
+    _gl_thread->submit([this, &params](){
+        std::cout << "GL: " << std::this_thread::get_id() << std::endl;
+        try {
+            _initGl(params);
+        } catch (const std::exception& err){
+            std::cout << err.what() << std::endl;
+        }
+        
+    }).wait();
 
-    //     glfwPollEvents();
-    //     glfwSwapBuffers(self->_window.get());
-    //     return true;
-    // });
+    onStart->addActionQueued([window = _window](){
+        glfwPollEvents();
+        glfwSwapBuffers(window.get());
+        return true;
+    });
+    
 }
 
 Context::~Context(){
-    std::cout << __FUNCTION__ << std::endl;
-    // auto future = run();
-    // future.wait();
-    _gl_thread->unpause();
-    _gl_thread->wait_for_tasks();
-    std::cout << __FUNCTION__ << std::endl;
 }
 
 std::future<void> Context::run(){
@@ -58,15 +50,9 @@ std::future<void> Context::run(){
     auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(now - _last_start_time);
     _last_start_time = now;
 
-    // onRun->addActionQueued([](std::weak_ptr<Context> weak_self){
-    //     std::cout << "Here" << std::endl;
-    //     // auto self = weak_self.lock();
-    //     // if (self){self->_gl_thread->pause();}
-    //     return false;
-    // });
-    auto future = onRun->emitQueued(this->weak_from_this(), dt);
-    _gl_thread->unpause();
-    return future;
+    onStart->emitQueued(this->shared_from_this(), dt);
+    onRun->emitQueued(this->shared_from_this(), dt);
+    return onFinish->emitQueued(this->shared_from_this(), dt);
 }
 
 const std::thread::id& Context::getThreadId() const {
@@ -82,10 +68,10 @@ void Context::_initGl(const Parameters& params){
     ++_glfw_windows;
 
     std::vector<std::pair<int, int>> hints = {
-        {GLFW_VERSION_MAJOR, 4},
-        {GLFW_VERSION_MINOR, 2},
+        // {GLFW_VERSION_MAJOR, 4},
+        // {GLFW_VERSION_MINOR, 6},
         {GLFW_CONTEXT_VERSION_MAJOR, 4},
-        {GLFW_CONTEXT_VERSION_MINOR, 2},
+        {GLFW_CONTEXT_VERSION_MINOR, 6},
         {GLFW_REFRESH_RATE, params.fps},
     };
 
@@ -104,6 +90,13 @@ void Context::_initGl(const Parameters& params){
         }
     );
     glfwSetWindowUserPointer(_window.get(), this);
+    glfwMakeContextCurrent(_window.get());
+    
+    auto ver = gladLoadGL(glfwGetProcAddress);
+    if (ver == 0){
+        throw std::runtime_error("Failed to initialize OpenGL context.");
+    }
+    std::cout << "Version: " << ver << std::endl;
     
     glfwSetWindowPosCallback(_window.get(), [](GLFWwindow* window, int x, int y){
         auto ctx = static_cast<Context*>(glfwGetWindowUserPointer(window));
@@ -112,8 +105,9 @@ void Context::_initGl(const Parameters& params){
 
     glfwSetKeyCallback(_window.get(), [](GLFWwindow* window, int key, int scancode, int action, int mods){
         auto ctx = static_cast<Context*>(glfwGetWindowUserPointer(window));
-        // ctx->onKey.emit(ctx, glfwToKey(key), scancode, glfwToKeyAction(action), mods);
+        ctx->onKey->emitQueued(ctx->shared_from_this(), key, scancode, action, mods);
     });
+
 
     // _bindGlfwCallback<&glfw::Window::setMoveCallback>(onWinMove);
     // _bindGlfwCallback<&glfw::Window::setResizeCallback>(onWinResize);

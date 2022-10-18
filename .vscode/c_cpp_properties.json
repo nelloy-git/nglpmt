@@ -12,7 +12,7 @@
                 "3rd_party/glfw_3.3.8/include",
                 "3rd_party/thread-pool"
             ],
-            "defines": ["NGLPMT_DEBUG", "NAPI_VERSION=6"],
+            "defines": ["NGLPMT_DEBUG", "NAPI_CPP_EXCEPTIONS", "NAPI_VERSION=6"],
             "compilerPath": "D:/VisualStudio/VC/Tools/MSVC/14.29.30037/bin/Hostx64/x64/cl.exe",
             "cppStandard": "c++20"
         }

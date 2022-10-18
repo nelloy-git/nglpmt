@@ -7,12 +7,9 @@
 namespace nglpmt::js {
 
 class Event : public Napi::ObjectWrap<Event> {
-
 struct Parameter;
-using NativeEvent = typename native::Event<const std::shared_ptr<std::vector<Parameter>>>;
-
 public:
-    static Napi::Function createJsConstructor(Napi::Env env);
+    static Napi::Function getJsConstructor(Napi::Env env);
 
     Event(const Napi::CallbackInfo& info);
     virtual ~Event();
@@ -23,6 +20,7 @@ public:
     Napi::Value addActionQueued(const Napi::CallbackInfo& info);
     Napi::Value addActionNow(const Napi::CallbackInfo& info);
 
+    Napi::Value clean(const Napi::CallbackInfo& info);
     Napi::Value delAction(const Napi::CallbackInfo& info);
 
     Napi::Value emitQueued(const Napi::CallbackInfo& info);
@@ -35,8 +33,9 @@ private:
         cond
     };
 
-    using ID = NativeEvent::ID;
-    static MapMT<std::u16string, NativeEvent>& _getMap();
+    using ID = native::Event<const std::shared_ptr<std::vector<Parameter>>>::ID;
+    using Native = native::Event<const std::shared_ptr<std::vector<Parameter>>>;
+    static MapMT<std::u16string, Native>& _getMap();
     static ActionType _getActionType(Napi::Env env, const std::string& s_type);
 
     struct TsfnData {
@@ -55,7 +54,7 @@ private:
     
     
     std::shared_ptr<std::atomic<bool>> _destroying;
-    std::shared_ptr<NativeEvent> _native;
+    std::shared_ptr<native::Event<const std::shared_ptr<std::vector<Parameter>>>> _native;
     std::shared_ptr<std::unordered_map<ID, Tsfn>> _id2tsfn;
 
     std::shared_ptr<std::vector<Parameter>> _convertArgs(const Napi::CallbackInfo& info);

@@ -52,7 +52,7 @@ private:
         std::shared_ptr<Loc> prev;
 
         inline std::string to_string() const {
-            auto str = std::string(file) + ":" + std::to_string(line) + "\t" + std::string(function);
+            auto str = std::string(file) + ":" + std::to_string(line); // + "\t" + std::string(function);
             if (prev){
                 str += "\n" + prev->to_string();
             }

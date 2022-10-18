@@ -82,7 +82,7 @@ private:
     > _value;
 };
 
-Napi::Function Event::createJsConstructor(Napi::Env env){
+Napi::Function Event::getJsConstructor(Napi::Env env){
     return DefineClass(env, "Event", {
         InstanceMethod<&Event::addActionQueued>("addActionQueued", static_cast<napi_property_attributes>(napi_writable | napi_configurable)),
         InstanceMethod<&Event::addActionNow>("addActionNow", static_cast<napi_property_attributes>(napi_writable | napi_configurable)),
@@ -95,7 +95,7 @@ Napi::Function Event::createJsConstructor(Napi::Env env){
 Event::Event(const Napi::CallbackInfo& info) :
     Napi::ObjectWrap<Event>(info),
     _destroying(new std::atomic<bool>(false)),
-    _native(_getMap().getOrMake(info[0].As<Napi::String>(), &Event::NativeEvent::make,
+    _native(_getMap().getOrMake(info[0].As<Napi::String>(), &Native::make,
                                 native::GlobalThreadPool::get())),
     _id2tsfn(new std::unordered_map<ID, Tsfn>){
 }
@@ -143,6 +143,12 @@ Napi::Value Event::addActionNow(const Napi::CallbackInfo& info){
     return Napi::BigInt::New(env, id.first);
 }
 
+Napi::Value Event::clean(const Napi::CallbackInfo& info){
+    for (auto& data : *_id2tsfn){
+        static_cast<void>(_native->delActionNow(data.first));
+    }
+}
+
 Napi::Value Event::delAction(const Napi::CallbackInfo& info){
     Napi::Env env = info.Env();
     bool lossless;
@@ -165,7 +171,6 @@ Napi::Value Event::delAction(const Napi::CallbackInfo& info){
 
         iter->second.Release();
         _id2tsfn->erase(iter);
-        // std::cout << _id2tsfn->size() << std::endl;
         return Napi::Boolean::New(env, true);
     }
     return Napi::Boolean::New(env, false);
@@ -187,8 +192,8 @@ Napi::Value Event::emitNow(const Napi::CallbackInfo& info){
     return promise;
 }
 
-MapMT<std::u16string, Event::NativeEvent>& Event::_getMap(){
-    static MapMT<std::u16string, Event::NativeEvent> map;
+MapMT<std::u16string, Event::Native>& Event::_getMap(){
+    static MapMT<std::u16string, native::Event<const std::shared_ptr<std::vector<Parameter>>>> map;
     return map;
 }
 
@@ -238,7 +243,7 @@ bool Event::_nativeTsfnCallback(ActionType type,
         case ActionType::repeat:
             repeat = true;
             break;
-        case ActionType::cond: return true;
+        case ActionType::cond:
             repeat = future.get();
             if (!repeat){
                 tsfn.Release();

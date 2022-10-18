@@ -9,23 +9,31 @@ function sleep(ms) {
 }
 
 let used_id = [];
+let esc_pressed = false;
 
-async function demo(event) {
+async function demo(context) {
     return new Promise(async (resolve) => {
-        let name = isMainThread ? 'Main' : 'Worker';
-        for (let i = 0; i < 5; i++) {
-            console.log("JS loop " + name + ": " + i);
+        let id = context.onKeyAdd("repeat", (key, scancode, action, mods) => {
+            console.log(scancode, action);
+            if (scancode == 1 && action == 0){
+                esc_pressed = true
+            }
+        })
+        used_id.push(id);
 
-            let id = event.addActionQueued("repeat", (a1, a2, a3) => {
-                console.log(name + ": " + a1 + ", " + a2 + ", " + a3);
-            })
-            used_id.push(id);
-
-            if (isMainThread){
-                console.log("JS emit");
-                await event.emitQueued(i, i / 10);
-                await sleep(1);
-            } 
+        if (isMainThread){
+            let buffer = new testAddon.GlBuffer(context);
+            buffer.data("GL_STATIC_READ", new Float32Array(1, 3, 5));
+            let usage = buffer.getUsage();
+            
+            let buffer_2 = new testAddon.GlBuffer(context);
+            buffer_2.data(usage, new Float32Array(1, 3, 5));
+            
+            console.log("Val_0: " + usage.value());
+            while(!esc_pressed){
+                await context.run();
+            }
+            console.log("Val_1: " + usage.value());
         }
         resolve(true);
     })
@@ -34,26 +42,29 @@ async function demo(event) {
 async function run(){
     let worker
     if (isMainThread) {
-        // worker = new Worker(__filename);
-        await sleep(70);
+        worker = new Worker(__filename);
+        await sleep(100);
     }
-    let event = new testAddon.Event('Test');
-    await demo(event);
+    let context = new testAddon.Context('Test');
+    await demo(context);
 
     if (isMainThread) {
         console.log("jsTerminate");
-        // worker.terminate();
-
-        for (var i = 0; i < used_id.length; i++) {
-            event.delAction(used_id[i]);
+        if (worker){
+            worker.terminate();
         }
+
+        context.onKeyClear();
         console.log("jsCleanup");
 
-        event.addActionQueued("once", (a1, a2, a3) => {
-            console.log("Main: " + a1 + ", " + a2 + ", " + a3);
-        })
-        console.log("jsPushed");
-        await event.emitQueued(0, 0, 0);
+        // let quit = false;
+        // event.addActionQueued("cond", (a1, a2, a3) => {
+        //     console.log("Main: " + a1 + ", " + a2 + ", " + a3);
+        //     return !quit;
+        // })
+        // quit = true;
+        // console.log("jsPushed");
+        // await event.emitQueued(0, 0, 0);
     }
 }
 

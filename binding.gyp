@@ -32,7 +32,7 @@
         'dependencies': [
             "<!(node -p \"require('node-addon-api').gyp\")"
         ],
-        'defines': [ 'NGLPMT_DEBUG' ],
+        'defines': [ 'NGLPMT_DEBUG', 'NAPI_CPP_EXCEPTIONS' ],
         'msvs_settings': {
             'VCCLCompilerTool': { "ExceptionHandling": 1, 'AdditionalOptions': [ '-std:c++20', '-W3'] }
         },

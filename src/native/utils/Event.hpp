@@ -5,7 +5,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <unordered_map>
+#include <map>
 
 #include "native/utils/CmdQueue.hpp"
 #include "native/utils/FuncWrapper.hpp"
@@ -28,7 +28,7 @@ class Event : public SharedObject<Event<Args...>> {
 
 public:
     using ID = uint64_t;
-    using IdMap = std::unordered_map<ID, std::shared_ptr<ActionData>>;
+    using IdMap = std::map<ID, std::shared_ptr<ActionData>>;
 
     static std::shared_ptr<Event> make(const std::shared_ptr<BS::thread_pool> emitter_pool = GlobalThreadPool::get()){
         return std::shared_ptr<Event>(new Event<Args...>(emitter_pool));
@@ -50,43 +50,51 @@ protected:
     Event(const std::shared_ptr<BS::thread_pool> emitter_pool);
 
 private:
-    std::shared_ptr<std::mutex> _lock;
+    std::shared_ptr<std::mutex> _lock_active;
+    std::shared_ptr<std::mutex> _lock_queued;
     std::shared_ptr<CmdQueue> _emitter;
     std::shared_ptr<IdMap> _active;
     std::shared_ptr<IdMap> _queued;
 
     static ID _getUniqId();
 
-    static bool _addAction(const ID& id, std::mutex& lock, IdMap& queued, IdMap& active){
-        std::lock_guard lg(lock);
+    static bool _addAction(const ID& id, std::mutex& lock_active, std::mutex& lock_queued, IdMap& queued, IdMap& active){
+        std::lock_guard lg_q(lock_queued);
         auto iter = queued.find(id);
         if (iter == queued.end()){
             return false;
         }
+        std::lock_guard lg_a(lock_active);
         active.insert_or_assign(iter->first, iter->second);
         queued.erase(iter);
         return true;
     }
 
-    static bool _removeAction(const ID& id, std::mutex& lock, IdMap& queued, IdMap& active){
-        std::lock_guard lg(lock);
-        auto queued_iter = queued.find(id);
-        bool queued_found = (queued_iter != queued.end());
-        if (queued_found){
-            queued.erase(queued_iter);
+    static bool _removeAction(const ID& id, std::mutex& lock_active, std::mutex& lock_queued, IdMap& queued, IdMap& active){
+        bool queued_found; 
+        {
+            std::lock_guard lg(lock_queued);
+            auto queued_iter = queued.find(id);
+            queued_found = (queued_iter != queued.end());
+            if (queued_found){
+                queued.erase(queued_iter);
+            }
         }
 
-        auto active_iter = active.find(id);
-        bool active_found = (active_iter != active.end());
-        if (active_found){
-            active.erase(active_iter);
+        bool active_found;
+        {
+            std::lock_guard lg(lock_active);
+            auto active_iter = active.find(id);
+            active_found = (active_iter != active.end());
+            if (active_found){
+                active.erase(active_iter);
+            }
         }
-
         return queued_found || active_found;
     }
 
-    static void _emitActions(std::mutex& lock, IdMap& active, Args... args){
-        std::lock_guard lg(lock);
+    static void _emitActions(std::mutex& lock_active, IdMap& active, Args... args){
+        std::lock_guard lg(lock_active);
         IdMap new_map;
         for (auto& data : active){
             bool repeat = false;
@@ -110,7 +118,8 @@ private:
 
 template<typename ... Args>
 inline Event<Args...>::Event(const std::shared_ptr<BS::thread_pool> emitter_pool) :
-    _lock(new std::mutex),
+    _lock_active(new std::mutex),
+    _lock_queued(new std::mutex),
     _emitter(CmdQueue::make(emitter_pool)),
     _active(new IdMap),
     _queued(new IdMap){
@@ -129,12 +138,12 @@ Event<Args...>::addActionQueued(const auto& action,
     auto promise = std::make_shared<std::promise<void>>();
 
     {
-        std::lock_guard lg(*_lock);
+        std::lock_guard lg(*_lock_queued);
         _queued->insert_or_assign(id, data);
     }
     
-    _emitter->push_back([id, promise, lock = _lock, active = _active, queued = _queued](){
-        _addAction(id, *lock, *queued, *active);
+    _emitter->push_back([id, promise, lock_active = _lock_active, lock_queued = _lock_queued, active = _active, queued = _queued](){
+        _addAction(id, *lock_active, *lock_queued, *queued, *active);
         promise->set_value();
     });
 
@@ -150,12 +159,12 @@ Event<Args...>::addActionNow(const auto& action,
     auto promise = std::make_shared<std::promise<void>>();
 
     {
-        std::lock_guard lg(*_lock);
+        std::lock_guard lg(*_lock_queued);
         _queued->insert_or_assign(id, data);
     }
-
-    _emitter->push_front([id, promise, lock = _lock, active = _active, queued = _queued](){
-        _addAction(id, *lock, *queued, *active);
+    
+    _emitter->push_front([id, promise, lock_active = _lock_active, lock_queued = _lock_queued, active = _active, queued = _queued](){
+        _addAction(id, *lock_active, *lock_queued, *queued, *active);
         promise->set_value();
     });
 
@@ -166,8 +175,8 @@ template<typename ... Args>
 inline std::future<bool>
 Event<Args...>::delActionQueued(const ID& id){
     auto promise = std::make_shared<std::promise<bool>>();
-    _emitter->push_back([id, promise, lock = _lock, active = _active, queued = _queued](){
-        bool found = _removeAction(id, *lock, *queued, *active);
+    _emitter->push_back([id, promise, lock_active = _lock_active, lock_queued = _lock_queued, active = _active, queued = _queued](){
+        bool found = _removeAction(id, *lock_active, *lock_queued, *queued, *active);
         promise->set_value(found);
     });
     return promise->get_future();
@@ -176,11 +185,9 @@ Event<Args...>::delActionQueued(const ID& id){
 template<typename ... Args>
 inline std::future<bool>
 Event<Args...>::delActionNow(const ID& id){
-    std::cout << __FUNCTION__ << std::endl;
     auto promise = std::make_shared<std::promise<bool>>();
-    _emitter->push_front([id, promise, lock = _lock, active = _active, queued = _queued](){
-        bool found = _removeAction(id, *lock, *queued, *active);
-        std::cout << __FUNCTION__ << (found ? " true" : " false") << std::endl;
+    _emitter->push_front([id, promise, lock_active = _lock_active, lock_queued = _lock_queued, active = _active, queued = _queued](){
+        bool found = _removeAction(id, *lock_active, *lock_queued, *queued, *active);
         promise->set_value(found);
     });
     return promise->get_future();
@@ -191,8 +198,8 @@ inline std::future<void>
 Event<Args...>::emitQueued(const Args&... args,
                            const SrcLoc& src_loc){
     auto promise = std::make_shared<std::promise<void>>();
-    _emitter->push_back([promise, lock = _lock, active = _active, args...](){
-        _emitActions(*lock, *active, args...);
+    _emitter->push_back([promise, lock_active = _lock_active, active = _active, args...](){
+        _emitActions(*lock_active, *active, args...);
         promise->set_value();
     });
 
@@ -204,8 +211,8 @@ inline std::future<void>
 Event<Args...>::emitNow(const Args&... args,
                         const SrcLoc& src_loc){
     auto promise = std::make_shared<std::promise<void>>();
-    _emitter->push_front([promise, lock = _lock, active = _active, args...](){
-        _emitActions(*lock, *active, args...);
+    _emitter->push_front([promise, lock_active = _lock_active, active = _active, args...](){
+        _emitActions(*lock_active, *active, args...);
         promise->set_value();
     });
 

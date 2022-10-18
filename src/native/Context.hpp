@@ -1,14 +1,7 @@
 #pragma once
 
-// #include <atomic>
-// #include <functional>
-// #include <string>
-
 #include "BS_thread_pool.hpp"
 
-#include "native/glfw/Key.hpp"
-#include "native/glfw/KeyAction.hpp"
-#include "native/glfw/KeyMod.hpp"
 #include "native/utils/Event.hpp"
 #include "native/utils/SharedObject.hpp"
 
@@ -32,9 +25,11 @@ public:
     std::future<void> run();
     const std::thread::id& getThreadId() const;
 
-    // const std::shared_ptr<Event<std::weak_ptr<Context>, const std::chrono::milliseconds&>> onStart;
-    const std::shared_ptr<Event<std::weak_ptr<Context>, const std::chrono::milliseconds&>> onRun;     // gl thread
-    // const std::shared_ptr<Event<std::weak_ptr<Context>, const std::chrono::milliseconds&>> onFinish;
+    // gl thread
+    using us = std::chrono::microseconds;
+    const std::shared_ptr<Event<std::shared_ptr<Context>, const us&>> onStart;
+    const std::shared_ptr<Event<std::shared_ptr<Context>, const us&>> onRun;     
+    const std::shared_ptr<Event<std::shared_ptr<Context>, const us&>> onFinish;
     // Event<Context*> onDetsroy;
 
     // Non-gl thread
@@ -53,10 +48,10 @@ public:
     // Event<Context*, Button, Action, ModFlags> onCursorButton;
     // Event<Context*, double, double> onCursorScroll;
 
-    // Event<Context*, const Key&, const int&, const KeyAction&, const KeyMods&> onKey;
+    const std::shared_ptr<Event<const std::shared_ptr<Context>, const int, const int, const int, const int>> onKey;
     // Event<Context*, unsigned int, ModFlags> onChar;
 protected:
-    Context();
+    Context(const Parameters& params);
     
 private:
     static std::atomic<unsigned int> _glfw_windows;

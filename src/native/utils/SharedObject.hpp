@@ -12,6 +12,8 @@ public:
     };
     virtual ~SharedObject(){};
 
+    
+
 protected:
     SharedObject(){};
 };
